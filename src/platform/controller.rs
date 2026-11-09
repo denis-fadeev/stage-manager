@@ -1429,9 +1429,9 @@ impl Controller {
     }
 
     /// Live frames of every shown managed window of the shown Space, the z-order and the
-    /// focused window.
+    /// focused window. The z-order and fallback frames come only from on-screen windows.
     fn observe(&self, ob: &mut Observer) -> Observation {
-        self.observe_with(ob, &windows::list_windows())
+        self.observe_with(ob, &windows::on_screen())
     }
 
     /// [`Self::observe`] with the window server's list already read (`list`). A frame whose
@@ -3248,7 +3248,7 @@ impl Controller {
         let dragged = self.drag.filter(|d| d.moving);
         // Only windows the window server shows: a hidden app's (⌘H) or a minimized window
         // never keeps the strip auto-hidden (R1-ui 2).
-        let on = on_screen(&windows::list_windows());
+        let on = on_screen(&windows::on_screen());
         let (active_frames, off): (Vec<_>, Vec<_>) = m
             .windows()
             .filter(|w| {
@@ -3618,7 +3618,7 @@ impl Controller {
                     self.focus_after_press = Some(id);
                     return;
                 }
-                let list = windows::list_windows();
+                let list = windows::on_screen();
                 if let Some(pid) = pid
                     && self.window_elsewhere(id)
                     && self.model.as_ref().is_some_and(|m| slide_hold::slide_listed(m, &listed_bounds(&list)))
@@ -3755,7 +3755,7 @@ impl Controller {
     /// a Desktop not shown, the app's focused window) and is held for the Space change
     /// instead ([`Self::hold_for_slide`]); one held so is decided again without it.
     fn decide_activation(&mut self, ob: &mut Observer, pid: i32, now: Instant, watch_slide: bool) {
-        let list = windows::list_windows();
+        let list = windows::on_screen();
         let present = self.app_present(pid);
         let needs_focus = self.model.as_ref().is_none_or(|m| m.activation_needs_focus(pid));
         let watch = watch_slide && !present;
@@ -3998,7 +3998,7 @@ impl Controller {
                 // One window list for the press: the Dock's bar and the wallpaper are looked
                 // up in it. A press on a Dock item: its click may take the user to another
                 // Desktop.
-                let list = if self.model.is_some() && !self.frozen() { windows::list_windows() } else { Vec::new() };
+                let list = if self.model.is_some() && !self.frozen() { windows::on_screen() } else { Vec::new() };
                 self.dock_pressed(ob, &list, event.at, now, shift_only);
                 // A click where an arriving window is about to be was meant for it: it
                 // arrives now, and the click is no wallpaper click.
