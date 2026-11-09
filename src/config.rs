@@ -103,6 +103,8 @@ impl CapacityRule {
 /// The `[strip]` keys the engine uses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripConfig {
+    /// Whether the strip can show at all.
+    pub enabled: bool,
     /// Card order (`[strip] order`).
     pub order: StripOrder,
     /// How the active stage shows in place (`[strip] active`; the older `show_active = true`
@@ -874,6 +876,7 @@ impl Config {
                 install_updates: v.flag("app.install_updates"),
             },
             strip: StripConfig {
+                enabled: v.flag("strip.enabled"),
                 order: match v.text("strip.order") {
                     "in_place" | "fixed" => StripOrder::InPlace,
                     "dock" => StripOrder::Dock,
@@ -1291,6 +1294,14 @@ mod tests {
         let p = parse("[stages]\nrestore_after_restart = false\n");
         assert!(!p.config.stages.restore_after_restart && p.warnings.is_empty(), "{:?}", p.warnings);
         assert!(parse("[stages]\nnames = [\"Mail\"]\n").config.stages.restore_after_restart);
+    }
+
+    #[test]
+    fn the_strip_can_be_disabled_without_disabling_capture_or_the_corner_patch() {
+        let c = parse("[strip]\nenabled = false\n");
+        assert!(!c.config.strip.enabled);
+        assert!(c.config.strip.capture && c.config.windows.corner_patch);
+        assert!(c.warnings.is_empty());
     }
 
     #[test]

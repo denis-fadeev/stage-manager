@@ -179,6 +179,7 @@ mod app {
         permissions: PermissionState,
         settings: RawSettings,
         strip_visible: bool,
+        strip_enabled: bool,
         config_error: Option<String>,
         last_mark: Option<String>,
         hotkeys: Option<HotkeyConfig>,
@@ -204,7 +205,7 @@ mod app {
 
     /// The global input monitor: clicks, keys and mouse moves in other apps, to the WM thread
     /// and the strip. Main thread.
-    fn monitor_input(mtm: MainThreadMarker, wm: &WmHandle) -> Option<InputMonitor> {
+    fn monitor_input(mtm: MainThreadMarker, wm: &WmHandle, strip_enabled: bool) -> Option<InputMonitor> {
         let wm_input = wm.clone();
         let on_input = move |event: input::InputEvent| {
             if event.is_switcher_key() {
@@ -217,11 +218,11 @@ mod app {
         };
         // Mouse moves go to the strip on this thread: off its cards the strip lets clicks
         // through, so it learns where the pointer is from the global monitor there.
-        let monitor = input::monitor(mtm, on_input, strip::pointer_moved);
+        let monitor = input::monitor(mtm, on_input, strip_enabled.then_some(strip::pointer_moved));
         if monitor.is_none() {
             tracing::warn!("cannot monitor input; wallpaper clicks, window drops on the strip and Shift sugar are off");
         }
-        strip::set_moves_fed(monitor.is_some());
+        strip::set_moves_fed(strip_enabled && monitor.is_some());
         monitor
     }
 
@@ -270,7 +271,7 @@ mod app {
                 {
                     // A monitor made before the grant may never hear a key (the review's K9).
                     self.input = None;
-                    self.input = monitor_input(mtm, &self.wm);
+                    self.input = monitor_input(mtm, &self.wm, self.strip_enabled);
                     tracing::info!(on = self.input.is_some(), "input monitor made again after the Accessibility grant");
                 }
                 self.permissions = now;
@@ -332,6 +333,13 @@ mod app {
         fn on_ui(&mut self, update: UiUpdate) {
             match update {
                 UiUpdate::Config { error, config, hotkeys, thumbnail_interval_ms, capture: on } => {
+                    if self.strip_enabled != config.strip.enabled
+                        && let Some(mtm) = MainThreadMarker::new()
+                    {
+                        self.strip_enabled = config.strip.enabled;
+                        self.input = monitor_input(mtm, &self.wm, self.strip_enabled);
+                    }
+                    capture::set_desktop_probe(!config.strip.enabled);
                     shell::config_changed(error.clone(), *config);
                     self.config_error = error;
                     capture::set_enabled(on);
@@ -905,7 +913,7 @@ mod app {
         warn_if_apple_stage_manager(&settings);
         wm.send(WmCommand::NativeSettings(settings.clone()));
 
-        let input_monitor = monitor_input(mtm, &wm);
+        let input_monitor = monitor_input(mtm, &wm, false);
 
         if let Err(e) = ctl::serve(listener, ctl_handler(wm.clone())) {
             tracing::error!("ctl socket unavailable: {e}");
@@ -921,7 +929,8 @@ mod app {
             wm: wm.clone(),
             permissions,
             settings,
-            strip_visible: true,
+            strip_visible: false,
+            strip_enabled: false,
             config_error: None,
             last_mark: None,
             hotkeys: None,

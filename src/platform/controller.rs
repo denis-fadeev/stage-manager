@@ -1251,6 +1251,7 @@ impl Controller {
             }
         };
         let style = Arc::new(store.config().strip_style());
+        let strip_visible = store.config().strip.enabled;
         let mut echoes = Echoes::default();
         echoes.set_window(Duration::from_millis(store.config().windows.focus_echo_ms));
         let this = Self {
@@ -1262,7 +1263,7 @@ impl Controller {
             config_checked: Instant::now(),
             settings: NativeSettings::default(),
             displays: Vec::new(),
-            strip_visible: true,
+            strip_visible,
             echoes,
             save: SaveClock::default(),
             strip_dirty: false,
@@ -5846,6 +5847,9 @@ impl Controller {
 
     /// Shows or hides the strip (menu and hotkey).
     pub fn toggle_strip(&mut self) {
+        if !self.store.config().strip.enabled {
+            return;
+        }
         self.strip_visible = !self.strip_visible;
         self.sync_fit();
         tracing::info!(visible = self.strip_visible, "strip toggled");
@@ -6051,6 +6055,7 @@ impl Controller {
     pub fn reload_config(&mut self, ob: &mut Observer) {
         self.flush_pending(ob);
         self.config_mtime = mtime(self.store.path());
+        let strip_was_enabled = self.store.config().strip.enabled;
         match self.store.reload() {
             Ok(warnings) => {
                 for w in warnings {
@@ -6061,6 +6066,10 @@ impl Controller {
                 // The fit and the strip may change: a pressed card's click reads afresh.
                 self.pressed_obs = None;
                 let config = self.store.config().clone();
+                if strip_was_enabled != config.strip.enabled {
+                    self.strip_visible = config.strip.enabled;
+                    notify_ui(UiUpdate::StripVisible(self.strip_visible));
+                }
                 logging::apply_config(&config.log);
                 let style = config.strip_style();
                 if *self.style != style {

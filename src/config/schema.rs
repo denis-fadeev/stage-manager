@@ -205,6 +205,7 @@ pub const KEYS: &[KeyDef] = &[
     k("app", "install_updates", Kind::Bool, "false",
         "Install a newer release without asking: downloaded and verified in the background, installed while you are away from the Mac (windows come back first, then the new version opens). Off: the app asks first."),
     // [strip]
+    k("strip", "enabled", Kind::Bool, "true", "Show the left strip. Off keeps it hidden even at the edge and keeps the right corner patch available."),
     k("strip", "order", Kind::Choice(&["native", "in_place", "fixed", "dock"]), "\"native\"",
         "Card order (Settings: Strip order): \"native\" is Apple's (the stage you leave takes the clicked card's slot); \"in_place\" keeps every stage in a place of its own, in creation order, whatever you click (\"fixed\" is its older name); \"dock\" keeps those places in the Dock's order of the stages' apps (a stage sits at its leftmost app, the apps of dock_ignore counting only when no other app of the stage is in the Dock; apps not in the Dock last), and a card cannot be dragged to another slot."),
     k("strip", "dock_ignore", Kind::Bundles, "[\"com.apple.finder\"]",
@@ -556,6 +557,7 @@ pub const LEGACY_DEFAULTS: &[&str] = &[
     include_str!("legacy/default-31.toml"),
     include_str!("legacy/default-32.toml"),
     include_str!("legacy/default-33.toml"),
+    include_str!("legacy/default-34.toml"),
 ];
 
 #[cfg(test)]

@@ -137,6 +137,12 @@ static IMAGES: AtomicU64 = AtomicU64::new(0);
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// The one gate of the process: every capturer asks it before a round.
 static GATE: LazyLock<Mutex<Gate>> = LazyLock::new(|| Mutex::new(Gate::default()));
+/// With the strip disabled, the desktop still can be the gate's one first capture.
+static DESKTOP_PROBE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_desktop_probe(enabled: bool) {
+    DESKTOP_PROBE.store(enabled, Ordering::Relaxed);
+}
 /// One capturer's worker state and its wake-up.
 type Worker = (Mutex<Shared>, Condvar);
 
@@ -1109,9 +1115,13 @@ pub type DesktopStill = Result<(CFRetained<CGImage>, f64), String>;
 pub type DesktopDone = Box<dyn FnOnce(DesktopStill) + Send>;
 
 /// Whether a still of the desktop may be taken now ([`capture_desktop`]): captures on, not
-/// quitting, Screen Recording granted (never asked for here), and the gate open: window
-/// captures already work, so this one goes with them and is never the process's probe.
+/// quitting, Screen Recording granted (never asked for here), and either the gate is open
+/// or a lone desktop probe is due while the strip is disabled.
 pub fn desktop_may_capture() -> Result<(), &'static str> {
+    desktop_capture_available(DESKTOP_PROBE.load(Ordering::Relaxed))
+}
+
+fn desktop_capture_available(allow_probe: bool) -> Result<(), &'static str> {
     if MODE.load(Ordering::SeqCst) != ON {
         return Err("window captures are off");
     }
@@ -1123,6 +1133,8 @@ pub fn desktop_may_capture() -> Result<(), &'static str> {
     }
     match gate().state() {
         super::capture_gate::State::Open => Ok(()),
+        super::capture_gate::State::Untried if allow_probe => Ok(()),
+        super::capture_gate::State::Refused { retry_at } if allow_probe && Instant::now() >= retry_at => Ok(()),
         _ => Err("window captures have not worked yet in this run (or rest after a refusal)"),
     }
 }
@@ -1152,15 +1164,35 @@ static DESKTOP_LAYERS_SAID: AtomicBool = AtomicBool::new(false);
 /// picture of the wallpaper. The switch's cover in the park corner when a desktop icon lies
 /// there.
 ///
-/// Quiet by design as the window captures are ([`desktop_may_capture`]: nothing is asked,
-/// nothing goes before the gate is open); a refusal closes the gate for every capturer. `done`
+/// Quiet by design ([`desktop_may_capture`]: Screen Recording must already be granted).
+/// With no strip, the desktop may be the lone probe. A refusal closes the shared gate. `done`
 /// runs once, on a ScreenCaptureKit queue (`Err` when no desktop-level window is listed).
 /// `Err` when it is not taken at all.
 pub fn capture_desktop(display_id: u32, region: Rect, done: DesktopDone) -> Result<(), &'static str> {
-    desktop_may_capture()?;
+    let allow_probe = DESKTOP_PROBE.load(Ordering::Relaxed);
+    desktop_capture_available(allow_probe)?;
+    let probe = if allow_probe {
+        match gate().permit(Instant::now()) {
+            Permit::All => false,
+            Permit::Probe => true,
+            Permit::Wait => return Err("another capture is probing or resting after a refusal"),
+        }
+    } else {
+        false
+    };
     let done = Arc::new(Mutex::new(Some(done)));
     let finish = move |slot: &Mutex<Option<DesktopDone>>, still: DesktopStill| {
         if let Some(f) = slot.lock().ok().and_then(|mut d| d.take()) {
+            if probe {
+                let outcome = if still.is_ok() { Outcome::Captured } else { Outcome::Inconclusive };
+                {
+                    let mut gate = gate();
+                    if gate.state() == super::capture_gate::State::Probing {
+                        gate.finished(outcome, Instant::now());
+                    }
+                }
+                wake_all();
+            }
             f(still);
         }
     };
