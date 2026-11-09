@@ -962,7 +962,7 @@ const MACOS_REVEAL_SETTLE: Duration = Duration::from_secs(3);
 const UNRESTORED_RETRY: Duration = Duration::from_secs(1);
 
 /// How long after a focus or an activation the corner patch is planned on the fast tick
-/// ([`Controller::replan_patch`], the Fable review's L2).
+/// ([`Controller::arm_patch_replan`], the Fable review's L2).
 const PATCH_REPLAN: Duration = Duration::from_millis(500);
 
 /// The engine plus everything around it on the WM thread.
@@ -1152,7 +1152,7 @@ pub struct Controller {
     /// ([`Self::reconcile_parked`]).
     user_focus: HashMap<u32, Instant>,
     /// Until when the corner patch is planned again on the fast tick after a focus or an
-    /// activation ([`Self::replan_patch`]).
+    /// activation ([`Self::arm_patch_replan`]).
     patch_fast_until: Option<Instant>,
     /// When a wallpaper click was left to macOS's own reveal (Show Desktop: every window slides
     /// aside): until its windows are back, a check never counts them gone, so the reveal is
@@ -2417,16 +2417,17 @@ impl Controller {
         }
     }
 
-    /// Plans the corner patch again now, and on the fast tick for [`PATCH_REPLAN`] (the
-    /// Fable review's L2): macOS raises an activated app's windows, its parked ones too,
-    /// above the patch; until the next 250 ms tick ordered it again the slivers showed on
-    /// every ⌘-Tab, Dock click or focus of an app with parked windows on this Desktop.
-    fn replan_patch(&mut self, now: Instant) {
-        if self.model.is_none() || !self.store.config().windows.corner_patch {
+    /// After handling focus, keep looking on the fast tick only if macOS may still
+    /// raise the focused app's parked windows above the patch.
+    fn arm_patch_replan(&mut self, now: Instant, pid: Option<i32>) {
+        let Some(m) = &self.model else { return };
+        if !self.store.config().windows.corner_patch {
             return;
         }
-        self.patch_fast_until = Some(now + PATCH_REPLAN);
-        self.update_patch();
+        let may_raise_parked = pid.is_none_or(|pid| m.windows().any(|w| w.meta.pid == pid && w.parked));
+        if may_raise_parked || self.pending.is_some() || self.unrestored.values().any(|w| w.in_zone) {
+            self.patch_fast_until = Some(now + PATCH_REPLAN);
+        }
     }
 
     /// True while the patch is planned on the fast tick after a focus or activation.
@@ -3244,6 +3245,19 @@ impl Controller {
         let Some(m) = &self.model else { return };
         let main = display == m.main_display().id;
         let current = space == m.current_space(display);
+        let fullscreen = main && current && self.phase.fullscreen();
+        if !self.store.config().strip.enabled {
+            // Space recovery still uses the pane to tell a move from a missed Space change.
+            strip_model::present(StripSnapshot {
+                disabled: true,
+                style: self.style.clone(),
+                space: space.0,
+                display: display.0,
+                fullscreen,
+                ..StripSnapshot::default()
+            });
+            return;
+        }
         let active = m.active_stage_in(space);
         let cards = cards_in(m, space);
         let dragged = self.drag.filter(|d| d.moving);
@@ -3297,7 +3311,8 @@ impl Controller {
             late: notes.late.clone(),
             space: space.0,
             display: display.0,
-            fullscreen: main && current && self.phase.fullscreen(),
+            fullscreen,
+            disabled: false,
             away: false,
             quiet: m.settling(),
         });
@@ -3451,11 +3466,24 @@ impl Controller {
         let now = Instant::now();
         // Something changed since a card was pressed: the click reads the windows afresh.
         self.pressed_obs = None;
-        // macOS raises an activated app's windows, parked ones too, above the corner patch:
-        // the patch is ordered again now, not at the next 250 ms tick (L2).
-        if matches!(event, WinEvent::Focused(_) | WinEvent::AppActivated(..)) {
-            self.replan_patch(now);
+        // macOS may already have raised parked windows above the patch. Check immediately,
+        // then use the result of the switch to see whether anything remains parked.
+        let focused_app = match &event {
+            WinEvent::Focused(id) => Some(ob.window(*id).map(|w| w.pid)),
+            WinEvent::AppActivated(pid, _) => Some(Some(*pid)),
+            _ => None,
         }
+        .filter(|_| self.model.is_some() && self.store.config().windows.corner_patch);
+        if focused_app.is_some() {
+            self.update_patch();
+        }
+        self.handle_event(ob, event, now);
+        if let Some(pid) = focused_app {
+            self.arm_patch_replan(now, pid);
+        }
+    }
+
+    fn handle_event(&mut self, ob: &mut Observer, event: WinEvent, now: Instant) {
         // Any other event brings windows held behind a transition's snapshots in at once;
         // moves, retitles and the echoes of our own focus (sent before the windows arrive,
         // so the keyboard goes to the new stage at once) leave the animation alone.
@@ -5118,7 +5146,7 @@ impl Controller {
         }
         let shown = on_screen(&list);
         let shown_main = self.shown_managed(&list);
-        if self.active_shown_changed(&shown) {
+        if self.store.config().strip.enabled && self.active_shown_changed(&shown) {
             tracing::debug!("a shown window was hidden or came back: the strip looks again");
             self.strip_dirty = true;
         }

@@ -1630,6 +1630,10 @@ impl Strip {
     // -- snapshots ------------------------------------------------------------------------
 
     fn present(&mut self, mut snapshot: StripSnapshot) {
+        if snapshot.disabled && self.has_snapshot && self.snapshot == snapshot {
+            self.publish_panel();
+            return;
+        }
         // The active stage's empty slot is laid out as a card of its own id, never the stage's.
         for c in snapshot.cards.iter_mut().filter(|c| c.gap) {
             c.stage = GAP_STAGE;

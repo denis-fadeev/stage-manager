@@ -70,6 +70,9 @@ use crate::ui::strip_model::LateNote;
 const HIDE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long an app macOS refused to hide is left parked before it is asked again.
 const REFUSED_FOR: Duration = Duration::from_secs(60);
+
+/// Recheck an unmanaged window that already prevented a hide at most once a second.
+const BLOCKER_RECHECK: Duration = Duration::from_secs(1);
 /// How long after our unhide its notice (and windows not on screen yet) are ours.
 const UNHIDE_ECHO: Duration = Duration::from_secs(1);
 /// After macOS unhid an app of ours: when its in-place windows the switch left parked go to
@@ -122,9 +125,9 @@ pub(super) struct Hides {
     /// each returns ([`Controller::after_batch_hides`]): their bundle ids.
     taking: BTreeMap<i32, String>,
     refused: HashMap<i32, Instant>,
-    /// One window per app that prevented hiding on a complete window list. It can
-    /// rule out a hide only while a fresh description still identifies it as unmanaged.
-    blockers: HashMap<i32, u32>,
+    /// One unmanaged window per app that prevented a hide, and when to recheck it.
+    /// This can only defer hiding. A hide still needs a fresh complete list.
+    blockers: HashMap<i32, (u32, Instant)>,
     unhiding: HashMap<i32, Instant>,
     reconcile: Vec<(i32, BTreeSet<u32>, Instant)>,
     /// The key window a batch focused of each app it unhid, focused again once the unhide
@@ -468,13 +471,19 @@ impl Controller {
                 tracing::trace!(pid, bundle, why, "hide: the app stays parked");
                 continue;
             }
-            if let Some(&id) = self.hides.blockers.get(&pid) {
-                let described = described_blockers.get_or_insert_with(|| {
-                    let ids: Vec<_> = self.hides.blockers.values().copied().collect();
-                    windows::describe(&ids)
-                });
-                if described.iter().any(|w| w.id == id && blocks_hide(w, pid, &managed)) {
-                    continue;
+            if let Some(&(id, due)) = self.hides.blockers.get(&pid) {
+                if !managed.contains(&id) {
+                    if now < due {
+                        continue;
+                    }
+                    let described = described_blockers.get_or_insert_with(|| {
+                        let ids: Vec<_> = self.hides.blockers.values().filter(|(_, due)| now >= *due).map(|(id, _)| *id).collect();
+                        windows::describe(&ids)
+                    });
+                    if described.iter().any(|w| w.id == id && blocks_hide(w, pid, &managed)) {
+                        self.hides.blockers.insert(pid, (id, now + BLOCKER_RECHECK));
+                        continue;
+                    }
                 }
                 self.hides.blockers.remove(&pid);
             }
@@ -482,7 +491,7 @@ impl Controller {
             if may_hide(&facts).is_ok() {
                 let list = list.get_or_insert_with(windows::list_windows);
                 if let Some(w) = list.iter().find(|w| blocks_hide(w, pid, &managed)) {
-                    self.hides.blockers.insert(pid, w.id);
+                    self.hides.blockers.insert(pid, (w.id, now + BLOCKER_RECHECK));
                     facts.unmanaged = 1;
                 }
             }
@@ -868,7 +877,7 @@ mod tests {
         h.ours.insert(10, ours("com.example.alpha"));
         h.taking.insert(12, "com.example.charlie".into());
         h.refused.insert(10, now);
-        h.blockers.insert(10, 12);
+        h.blockers.insert(10, (12, now));
         h.unhiding.insert(10, now);
         h.reconcile.push((10, [7].into(), now));
         h.reconcile.push((11, [9].into(), now));

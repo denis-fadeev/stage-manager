@@ -1584,6 +1584,9 @@ impl Controller {
     /// Redraws the pane of `space`, a Desktop not shown (arranged ahead at a Dock click, or
     /// that arrangement undone), with its cards, so it slides in as it is.
     fn present_away(&mut self, space: SpaceId) {
+        if !self.store.config().strip.enabled {
+            return;
+        }
         let Some(m) = self.model.as_ref() else { return };
         // Its own screen's strip (round displays-2).
         let display = m.display_of_space(space);

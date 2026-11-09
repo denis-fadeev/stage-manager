@@ -35,6 +35,8 @@ pub struct StripSnapshot {
     pub hide_recent_apps: bool,
     /// The user's Show/Hide Strip toggle (menu or hotkey). `false` hides it outright.
     pub user_visible: bool,
+    /// Disabled in config: a pane still marks its Space, but there are no cards to draw.
+    pub disabled: bool,
     /// How the strip looks and moves (config; changes apply live).
     pub style: Arc<StripStyle>,
     /// Frames of the active stage's onscreen windows, for auto-hide when one reaches the
