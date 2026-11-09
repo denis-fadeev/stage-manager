@@ -50,7 +50,7 @@ use super::launch_scan;
 use super::native_settings::{self, RawSettings};
 use super::observe::{self, Observer};
 use super::observe_probe;
-use super::{enhanced_ui, safety};
+use super::{enhanced_ui, safety, windows};
 use crate::config::HotkeyCommand;
 use crate::engine::model::Display;
 use crate::engine::rescan::{Queued, Rescan, Why};
@@ -92,6 +92,9 @@ fn arm_fast_tick() {
 
 /// App-observation retries run every this many ticks (about once a second).
 const RETRY_EVERY: u32 = 4;
+
+/// Quiet corner-patch checks run every other housekeeping tick (about half a second).
+const PATCH_EVERY: u32 = 2;
 
 /// After the main display changes, how long until every allowed app's windows are scanned
 /// for the park zone: macOS puts windows back where they were the last time that display
@@ -795,17 +798,24 @@ impl WmState {
         if full {
             self.release_overdue_scans();
             self.observer.retry_pending(ax_callback);
-            // Windows closed while their app did not answer (8M): no destroyed notice came.
-            self.observer.sweep_closed();
-            // Windows taken from an old guardian (round 8N): its rules, about once a second.
+            // Both recovery checks need presence on every Desktop, not z-order. The taken
+            // watch can move windows, so it is the last consumer of this list.
+            let tracked = self.observer.windows();
+            let taken = if self.trusted { safety::taken_ids() } else { Default::default() };
+            let list = if (self.observer.observing() && !tracked.is_empty()) || !taken.is_empty() {
+                windows::recovery_list(tracked.keys().copied().chain(taken))
+            } else {
+                Vec::new()
+            };
+            self.observer.sweep_closed(&list);
             if self.trusted {
-                self.taken.pass(&self.controller.model_window_ids());
+                self.taken.pass(&self.controller.model_window_ids(), Some(&list));
             }
         }
         self.sweep_after_display_change();
         self.rescan_pass();
         self.pump();
-        self.controller.tick(&mut self.observer);
+        self.controller.tick(&mut self.observer, self.ticks.is_multiple_of(PATCH_EVERY));
         // An app's enhanced UI a restore could not put back, or held off too long: on again.
         enhanced_ui::sweep();
     }

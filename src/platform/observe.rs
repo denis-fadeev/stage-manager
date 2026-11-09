@@ -977,16 +977,15 @@ impl Observer {
 
     /// Windows closed while their app did not answer (round 8M, [`crate::engine::vanished`]):
     /// each tracked window of an app still observed and running that the window server's
-    /// complete list ([`windows::list_windows`]: `kCGWindowListOptionAll`, every Desktop,
+    /// complete list ([`windows::recovery_list`]: `kCGWindowListOptionAll`, every Desktop,
     /// minimized and hidden windows included) misses on two looks at least
     /// [`crate::engine::vanished::LOOK_APART`] apart is dropped and reported destroyed, as a
     /// destroyed notification would have (its stage drops it; an empty stage has no card).
     /// Logged at info, once per window. Called about once a second.
-    pub fn sweep_closed(&mut self) {
+    pub fn sweep_closed(&mut self, list: &[CgWindow]) {
         if !self.observing || self.windows.is_empty() {
             return;
         }
-        let list = windows::list_windows();
         // Nothing on screen at all: the window server answered nothing (or the session is not
         // the console's): no observation.
         let blind = !list.iter().any(|w| w.onscreen);

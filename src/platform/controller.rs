@@ -6112,7 +6112,7 @@ impl Controller {
     }
 
     /// Housekeeping, about every 250 ms: debounced save, config polling, strip refresh.
-    pub fn tick(&mut self, ob: &mut Observer) {
+    pub fn tick(&mut self, ob: &mut Observer, patch_due: bool) {
         let now = Instant::now();
         if let Some(s) = self.phase.switching().filter(|s| s.overdue(now)) {
             tracing::warn!(id = s.id, max_ms = s.max.as_millis() as u64, "the strip never unveiled a transition's windows; they come back now");
@@ -6231,10 +6231,19 @@ impl Controller {
                 self.check_spaces(ob);
             }
             self.hide_pass(ob);
-            // One read of the window server's list a tick: the patch's, or the tap's own when
-            // the patch is off. The inert-slivers tap judges presses on it, never reading it
-            // itself.
-            let list = self.update_patch().or_else(|| super::sliver_tap::wants_list().then(windows::on_screen));
+            // Skip alternate patch plans only in quiet periods. The tap and parked-window
+            // reconciliation keep their cadence and share the patch's onscreen read when
+            // it makes one. This comes after the work above, which can move windows.
+            let plan_patch = patch_due
+                || self.phase.switching().is_some()
+                || self.phase.space_settling(now)
+                || self.drag.is_some()
+                || self.focus_after_press.is_some()
+                || self.wants_fast_tick();
+            let list = plan_patch
+                .then(|| self.update_patch())
+                .flatten()
+                .or_else(|| super::sliver_tap::wants_list().then(windows::on_screen));
             super::sliver_tap::refresh(list.as_deref());
             self.reconcile_parked(ob, list.as_deref());
         }

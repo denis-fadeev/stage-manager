@@ -55,13 +55,28 @@ pub struct CgWindow {
 /// list puts windows created later (our own strip panels, say) after older windows they
 /// cover, which once made a test's safety check see a covered window as topmost.
 pub fn list_windows() -> Vec<CgWindow> {
-    let mut out = query(CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements);
+    let onscreen = on_screen();
+    merge_lists(onscreen, all_unordered())
+}
+
+/// Complete list for recovery checks that only need presence and frames. If the all-Spaces
+/// read looks blind or misses a watched window, check the onscreen list before judging it.
+pub(super) fn recovery_list(mut watched: impl Iterator<Item = u32>) -> Vec<CgWindow> {
+    let all = all_unordered();
+    let seen: HashSet<u32> = all.iter().map(|w| w.id).collect();
+    if !all.iter().any(|w| w.onscreen) || watched.any(|id| !seen.contains(&id)) {
+        return merge_lists(on_screen(), all);
+    }
+    all
+}
+
+fn all_unordered() -> Vec<CgWindow> {
+    query(CGWindowListOption::OptionAll | CGWindowListOption::ExcludeDesktopElements)
+}
+
+fn merge_lists(mut out: Vec<CgWindow>, all: Vec<CgWindow>) -> Vec<CgWindow> {
     let seen: HashSet<u32> = out.iter().map(|w| w.id).collect();
-    out.extend(
-        query(CGWindowListOption::OptionAll | CGWindowListOption::ExcludeDesktopElements)
-            .into_iter()
-            .filter(|w| !seen.contains(&w.id)),
-    );
+    out.extend(all.into_iter().filter(|w| !seen.contains(&w.id)));
     out
 }
 

@@ -97,8 +97,8 @@ impl TakenWatch {
     /// taken window `managed` by the model is let go (the model sees to it); then the
     /// guardian's rules: seen back or gone is let go, one listed on screen still parked is
     /// brought back to its taken frame. Each window let go leaves the taken ones (and the
-    /// parked file).
-    pub fn pass(&mut self, managed: &BTreeSet<u32>) {
+    /// parked file). The periodic pass shares the closed-window sweep's complete list.
+    pub fn pass(&mut self, managed: &BTreeSet<u32>, list: Option<&[windows::CgWindow]>) {
         let taken = safety::taken();
         if taken.is_empty() {
             self.watch = None;
@@ -107,8 +107,15 @@ impl TakenWatch {
             return;
         }
         let now = Instant::now();
-        // The window server's complete list (every Desktop, ordered-out windows included).
-        let list = windows::list_windows();
+        // At quit, read afresh after the leftovers check.
+        let read;
+        let list = match list {
+            Some(list) => list,
+            None => {
+                read = windows::list_windows();
+                &read
+            }
+        };
         let listed: HashSet<u32> = list.iter().map(|c| c.id).collect();
         let blind = !list.iter().any(|c| c.onscreen);
         let dropped = self.drops.look(now, &taken, &listed, blind, process_runs);
@@ -141,7 +148,7 @@ impl TakenWatch {
         let in_model: Vec<u32> = held.iter().copied().filter(|id| managed.contains(id)).collect();
         let mut events = w.let_go(&in_model, Release::Managed);
         let displays = safety::scan_displays();
-        events.extend(w.observe(now, &guardian::listed_windows(&list), &displays));
+        events.extend(w.observe(now, &guardian::listed_windows(list), &displays));
         let reached = RefCell::new(Vec::new());
         guardian::reach_shown(w, &displays, &mut self.attempts, now, "taken watch", &|e| reached.borrow_mut().push(*e));
         events.extend(reached.into_inner());
@@ -165,7 +172,7 @@ impl TakenWatch {
     /// unclean then, and this app's guardian takes them over (a warning: passed on).
     pub fn last_look(&mut self, managed: &BTreeSet<u32>) -> usize {
         self.attempts.clear();
-        self.pass(managed);
+        self.pass(managed, None);
         let left = safety::taken_len();
         if left > 0 {
             tracing::warn!(windows = ?safety::taken_ids(), "a handed-over window still away; passed on");
