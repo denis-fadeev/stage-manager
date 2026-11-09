@@ -386,6 +386,15 @@ pub fn is_hidden(pid: i32) -> Option<bool> {
     running(pid).map(|a| a.isHidden())
 }
 
+/// Reads visibility and activation through one running-app lookup. An already hidden
+/// app needs no activation check.
+pub fn hidden_and_active(pid: i32) -> Option<(bool, bool)> {
+    running(pid).map(|app| {
+        let hidden = app.isHidden();
+        (hidden, !hidden && app.isActive())
+    })
+}
+
 /// Whether app `pid` is the active (frontmost) app now; `None` when it is not running.
 pub fn is_active(pid: i32) -> Option<bool> {
     running(pid).map(|a| a.isActive())

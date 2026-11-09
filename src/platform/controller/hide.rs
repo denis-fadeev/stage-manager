@@ -93,6 +93,16 @@ const ACTIVATION_WAIT: Duration = Duration::from_millis(60);
 /// `NSRunningApplication`).
 const ACTIVATION_TRIES: u8 = 2;
 
+/// A window the model does not manage that makes hiding its whole app unsafe.
+fn blocks_hide(w: &windows::CgWindow, pid: i32, managed: &HashSet<u32>) -> bool {
+    w.pid == pid
+        && w.layer == 0
+        && w.alpha > 0.0
+        && w.bounds.w >= UNMANAGED_MIN
+        && w.bounds.h >= UNMANAGED_MIN
+        && !managed.contains(&w.id)
+}
+
 /// An app we hid.
 #[derive(Debug)]
 pub(super) struct Ours {
@@ -112,6 +122,9 @@ pub(super) struct Hides {
     /// each returns ([`Controller::after_batch_hides`]): their bundle ids.
     taking: BTreeMap<i32, String>,
     refused: HashMap<i32, Instant>,
+    /// One window per app that prevented hiding on a complete window list. It can
+    /// rule out a hide only while a fresh description still identifies it as unmanaged.
+    blockers: HashMap<i32, u32>,
     unhiding: HashMap<i32, Instant>,
     reconcile: Vec<(i32, BTreeSet<u32>, Instant)>,
     /// The key window a batch focused of each app it unhid, focused again once the unhide
@@ -187,6 +200,7 @@ impl Hides {
     fn forget(&mut self, pid: i32) -> bool {
         let listed = self.ours.remove(&pid).is_some() | self.taking.remove(&pid).is_some();
         self.refused.remove(&pid);
+        self.blockers.remove(&pid);
         self.unhiding.remove(&pid);
         self.refocus.remove(&pid);
         self.landing.remove(&pid);
@@ -418,21 +432,23 @@ impl Controller {
     fn hide_new(&mut self, ob: &Observer, now: Instant) {
         let Some(m) = &self.model else { return };
         let pids: BTreeSet<i32> = m.windows().map(|w| w.meta.pid).collect();
-        let candidates: Vec<i32> = pids
+        let candidates: Vec<_> = pids
             .into_iter()
             .filter(|p| !self.hides.ours(*p))
-            .filter(|p| {
-                let park = m.app_park(*p);
-                park.windows > 0 && park.shown == 0 && park.stage_here
+            .filter_map(|pid| {
+                let park = m.app_park(pid);
+                (park.windows > 0 && park.shown == 0 && park.stage_here).then_some((pid, park))
             })
             .collect();
         if candidates.is_empty() {
             return;
         }
         let managed: HashSet<u32> = m.windows().map(|w| w.meta.id.0).collect();
-        // Read once, and only when an app passes every cheap test first.
+        let mut described_blockers = None;
+        // A complete list is still required before a hide. A known blocker can spare
+        // that scan and the app-state queries, but only if it still blocks now.
         let mut list: Option<Vec<windows::CgWindow>> = None;
-        for pid in candidates {
+        for (pid, park) in candidates {
             let bundle = ob.bundle_id(pid).map(String::from).or_else(|| apps::bundle_of(pid)).filter(|b| !b.is_empty());
             let bundle_known = bundle.is_some();
             let bundle = bundle.unwrap_or_default();
@@ -441,21 +457,34 @@ impl Controller {
                 on: true,
                 finder: bundle == FINDER_BUNDLE_ID,
                 bundle_known,
-                park: self.model.as_ref().map(|m| m.app_park(pid)).unwrap_or_default(),
+                park,
                 unmanaged: 0,
                 waiting,
-                hidden: apps::is_hidden(pid).unwrap_or(true),
-                active: apps::is_active(pid).unwrap_or(true),
+                hidden: false,
+                active: false,
                 refused: self.hides.refused.contains_key(&pid),
             };
+            if let Err(why) = may_hide(&facts) {
+                tracing::trace!(pid, bundle, why, "hide: the app stays parked");
+                continue;
+            }
+            if let Some(&id) = self.hides.blockers.get(&pid) {
+                let described = described_blockers.get_or_insert_with(|| {
+                    let ids: Vec<_> = self.hides.blockers.values().copied().collect();
+                    windows::describe(&ids)
+                });
+                if described.iter().any(|w| w.id == id && blocks_hide(w, pid, &managed)) {
+                    continue;
+                }
+                self.hides.blockers.remove(&pid);
+            }
+            (facts.hidden, facts.active) = apps::hidden_and_active(pid).unwrap_or((true, true));
             if may_hide(&facts).is_ok() {
                 let list = list.get_or_insert_with(windows::list_windows);
-                facts.unmanaged = list
-                    .iter()
-                    .filter(|w| w.pid == pid && w.layer == 0 && w.alpha > 0.0)
-                    .filter(|w| w.bounds.w >= UNMANAGED_MIN && w.bounds.h >= UNMANAGED_MIN)
-                    .filter(|w| !managed.contains(&w.id))
-                    .count();
+                if let Some(w) = list.iter().find(|w| blocks_hide(w, pid, &managed)) {
+                    self.hides.blockers.insert(pid, w.id);
+                    facts.unmanaged = 1;
+                }
             }
             match may_hide(&facts) {
                 Ok(()) => {
@@ -801,6 +830,22 @@ mod tests {
     }
 
     #[test]
+    fn a_remembered_unmanaged_window_has_to_still_block_the_same_app() {
+        let mut w = windows::CgWindow {
+            id: 12, pid: 10, owner: String::new(), name: None, layer: 0,
+            bounds: Rect::new(40.0, 40.0, 400.0, 300.0), onscreen: false, alpha: 1.0,
+        };
+        let mut managed = HashSet::new();
+        assert!(blocks_hide(&w, 10, &managed), "windows on another Desktop still count");
+        assert!(!blocks_hide(&w, 11, &managed), "the description must match the app");
+        managed.insert(12);
+        assert!(!blocks_hide(&w, 10, &managed), "the window is now managed");
+        managed.clear();
+        w.alpha = 0.0;
+        assert!(!blocks_hide(&w, 10, &managed), "the window no longer blocks a hide");
+    }
+
+    #[test]
     fn a_batch_s_unhide_stays_recorded_until_it_returns() {
         let mut h = Hides::default();
         h.ours.insert(10, ours("com.example.alpha"));
@@ -823,10 +868,12 @@ mod tests {
         h.ours.insert(10, ours("com.example.alpha"));
         h.taking.insert(12, "com.example.charlie".into());
         h.refused.insert(10, now);
+        h.blockers.insert(10, 12);
         h.unhiding.insert(10, now);
         h.reconcile.push((10, [7].into(), now));
         h.reconcile.push((11, [9].into(), now));
         assert!(h.forget(10));
+        assert!(!h.blockers.contains_key(&10));
         assert!(!h.ours(10) && h.refused.is_empty() && h.unhiding.is_empty());
         assert_eq!(h.reconcile.len(), 1, "another app's reconcile stays");
         assert!(h.forget(12), "one a batch was unhiding");
