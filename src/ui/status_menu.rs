@@ -8,7 +8,9 @@ use std::cell::RefCell;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
+use objc2_app_kit::{
+    NSCellImagePosition, NSFontWeightRegular, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSSquareStatusItemLength, NSStatusBar, NSStatusItem,
+};
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
 
 use crate::platform::permissions::{self, Approval, PermissionState};
@@ -295,11 +297,23 @@ fn entry(mtm: MainThreadMarker, which: Item, target: &MenuTarget) -> Retained<NS
 }
 
 impl StatusMenu {
-    /// Creates the status item with the app's glyph ([`glyph::status_image`]).
+    /// Creates the status item with the same car symbol as Parking.
     pub fn new(mtm: MainThreadMarker) -> Self {
-        let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
+        let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSSquareStatusItemLength);
         if let Some(button) = status_item.button(mtm) {
-            button.setImage(Some(&glyph::status_image()));
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str("car.fill"),
+                Some(&NSString::from_str("Stage Manager")),
+            )
+            .map(|image| {
+                // SAFETY: the weight constant is AppKit's own.
+                let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(15.0, unsafe { NSFontWeightRegular });
+                image.imageWithSymbolConfiguration(&config).unwrap_or(image)
+            })
+            .unwrap_or_else(glyph::status_image);
+            image.setTemplate(true);
+            button.setImage(Some(&image));
+            button.setImagePosition(NSCellImagePosition::ImageOnly);
             tracing::debug!(visible = status_item.isVisible(), "status item created");
         } else {
             tracing::warn!("status item has no button");
