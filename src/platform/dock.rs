@@ -9,9 +9,8 @@
 //! application element: an application item (role `AXDockItem`, subrole
 //! `AXApplicationDockItem`) gives its bundle (`AXURL`) and its frame. The press counts as a
 //! click on that item ([`is_click`]) when it is let go over the same item, soon and without
-//! moving (a press held opens the item's menu; a drag moves or removes it) and without a
-//! modifier (⌘ reveals the app in Finder, ⌥ hides the others, ⌃ opens the menu, ⇧ is the
-//! Shift sugar's).
+//! moving (a press held opens the item's menu; a drag moves or removes it). An unmodified
+//! click can predict a Desktop switch. A Shift-click can detach the app from a shown stage.
 //!
 //! "Follow the Dock" (`[strip] order = "dock"`) reads the order of the Dock's application
 //! items, pinned and running alike, as the Dock shows them ([`app_order`]); the engine sorts
@@ -87,9 +86,10 @@ pub fn visible_window_of(list: &[CgWindow], pid: i32, parks: impl Fn(Rect) -> bo
 }
 
 /// True when a press on a Dock item let go at `up` (when `up_at`) is a click on it: over
-/// the same item, within [`CLICK_SLOP`] of the press, before [`CLICK_MAX`], no modifier held.
-pub fn is_click<T>(press: &DockPress<T>, up: Point, up_at: Instant, modifiers: bool) -> bool {
-    !modifiers
+/// the same item, within [`CLICK_SLOP`] of the press, before [`CLICK_MAX`], with modifiers
+/// allowed for the gesture.
+pub fn is_click<T>(press: &DockPress<T>, up: Point, up_at: Instant, blocked: bool) -> bool {
+    !blocked
         && press.item.frame.contains(up)
         && (up.x - press.at.x).abs().max((up.y - press.at.y).abs()) <= CLICK_SLOP
         && up_at.saturating_duration_since(press.when) <= CLICK_MAX

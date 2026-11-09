@@ -550,6 +550,12 @@ const DOCK_SEEN_FOR: Duration = Duration::from_millis(2000);
 /// A Dock click's prediction: the app and the window macOS will show, or why none.
 pub(super) type Prediction = Result<(i32, WindowId), &'static str>;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DockIntent {
+    Plain(Prediction),
+    Shift(Option<(i32, StageId)>),
+}
+
 /// A Desktop arranged ahead and not recognized yet.
 #[derive(Debug, Clone)]
 pub(super) struct AheadSent {
@@ -1339,7 +1345,7 @@ impl Controller {
     /// the application item there is hit-tested and its click's prediction worked out now
     /// (the app's state does not change during a press), kept for the mouse-up
     /// ([`Self::dock_released`]). Anywhere else this costs the bar test on `list` only.
-    pub(super) fn dock_pressed(&mut self, ob: &Observer, list: &[CgWindow], p: crate::engine::geometry::Point, now: Instant) {
+    pub(super) fn dock_pressed(&mut self, ob: &Observer, list: &[CgWindow], p: crate::engine::geometry::Point, now: Instant, shift_only: bool) {
         self.dock_press = None;
         if self.model.is_none() || self.frozen() {
             return;
@@ -1349,7 +1355,7 @@ impl Controller {
             return;
         }
         match dock::item_at(dock, p) {
-            Ok((_, item)) => self.press_item(ob, list, item, p, now),
+            Ok((_, item)) => self.press_item(ob, list, item, p, now, shift_only),
             Err(miss) if miss.notable => {
                 tracing::info!(x = p.x, y = p.y, found = miss.found, "dock: pressed, but the hit-test found no application item")
             }
@@ -1368,37 +1374,73 @@ impl Controller {
     }
 
     /// A press on `item` at `p`: its click's prediction, kept with the press.
-    fn press_item(&mut self, ob: &Observer, list: &[CgWindow], item: DockItem, p: crate::engine::geometry::Point, now: Instant) {
-        let prediction = self.dock_prediction(ob, list, &item);
+    fn press_item(&mut self, ob: &Observer, list: &[CgWindow], item: DockItem, p: crate::engine::geometry::Point, now: Instant, shift_only: bool) {
+        let prediction = if shift_only {
+            DockIntent::Shift(self.dock_detach_target(ob, list, &item))
+        } else {
+            DockIntent::Plain(self.dock_prediction(ob, list, &item))
+        };
         tracing::debug!(
             x = p.x,
             y = p.y,
             path = item.path,
-            prediction = ?prediction.map(|(_, w)| w.0),
+            ?prediction,
             took_ms = ms(now, Instant::now()),
             "dock: pressed"
         );
         self.dock_press = Some(DockPress { item, at: p, when: now, prediction });
     }
 
-    /// A left mouse-up at `p` (`modifiers`: any of ⌘⌥⌃⇧ held): a click on the Dock item
-    /// pressed has its prediction arranged ([`Self::dock_clicked`]).
-    pub(super) fn dock_released(&mut self, ob: &Observer, p: crate::engine::geometry::Point, modifiers: bool, now: Instant) -> Option<WindowId> {
+    /// The shown stage of the app's frontmost visible managed window at the press. An
+    /// app brought here by the existing Shift activation must not be sent away at release.
+    fn dock_detach_target(&self, ob: &Observer, list: &[CgWindow], item: &DockItem) -> Option<(i32, StageId)> {
+        if !self.store.config().sugar.shift_brings_here {
+            return None;
+        }
+        let m = self.model.as_ref()?;
+        let pid = self.dock_item_pid(ob, item).ok()?;
+        let stage = list.iter()
+            .filter(|w| w.pid == pid && w.onscreen && w.layer == 0)
+            .filter_map(|w| m.stage_of(WindowId(w.id)))
+            .find(|stage| m.stage_in_front(*stage))?;
+        Some((pid, stage))
+    }
+
+    /// On release, apply the Dock click's intent if it was a click on the pressed item.
+    pub(super) fn dock_released(&mut self, ob: &mut Observer, p: crate::engine::geometry::Point, modifiers: bool, shift_only: bool, now: Instant) -> Option<WindowId> {
         let press = self.dock_press.take()?;
-        if dock::is_click(&press, p, now, modifiers) {
-            self.dock_clicked(ob, &press, now)
-        } else {
+        let blocked = match press.prediction {
+            DockIntent::Plain(_) => modifiers,
+            DockIntent::Shift(_) => !shift_only,
+        };
+        if !dock::is_click(&press, p, now, blocked) {
             tracing::debug!(path = press.item.path, held_ms = ms(press.when, now), modifiers, "dock: a press, not a click; no prediction");
-            None
+            return None;
+        }
+        match press.prediction {
+            DockIntent::Plain(prediction) => self.dock_clicked(ob, &press, prediction, now),
+            DockIntent::Shift(Some((pid, stage))) if !self.frozen() && self.store.config().sugar.shift_brings_here => {
+                let obs = self.observe(ob);
+                let actions = self.model.as_mut()?.detach_app(pid, stage, &obs);
+                if !actions.is_empty() {
+                    self.triggers.consume();
+                    self.forget_held(ob);
+                    self.echoes.touch_app(pid, Instant::now());
+                    tracing::info!(pid, "Shift-click in the Dock: the app leaves the current stage");
+                    self.execute_animated(ob, actions);
+                }
+                None
+            }
+            DockIntent::Shift(_) => None,
         }
     }
 
     /// A click on a Dock item (`press`, let go at `released`): when macOS will take the user
     /// to another Desktop for it (the prediction made at the press), that Desktop is
     /// arranged now. Returns the window predicted.
-    fn dock_clicked(&mut self, ob: &Observer, press: &DockPress<Prediction>, released: Instant) -> Option<WindowId> {
+    fn dock_clicked(&mut self, ob: &Observer, press: &DockPress<DockIntent>, prediction: Prediction, released: Instant) -> Option<WindowId> {
         let started = Instant::now();
-        let why = match press.prediction {
+        let why = match prediction {
             Ok((pid, window)) => {
                 let regated = self.model.as_ref().map_or(Err("not managing"), |m| m.dock_gates(pid));
                 let gone = self.model.as_ref().is_none_or(|m| m.window(window).is_none());
@@ -1444,17 +1486,22 @@ impl Controller {
         None
     }
 
+    fn dock_item_pid(&self, ob: &Observer, item: &DockItem) -> Result<i32, &'static str> {
+        let bundle = dock::bundle_id_at(&item.path).ok_or("the item's bundle has no id")?;
+        match ob.pids_with_bundle(&bundle)[..] {
+            [] => Err("the app is not running (or not managed)"),
+            [pid] => Ok(pid),
+            _ => Err("several instances of the app run"),
+        }
+    }
+
     /// The app a Dock item is for and the window macOS will show for it on another
     /// Desktop, or why there is no prediction: the model's gates and the window list
     /// (`list`) first, the app asked (bounded) only when they pass.
     fn dock_prediction(&mut self, ob: &Observer, list: &[CgWindow], item: &DockItem) -> Prediction {
         let m = self.model.as_ref().ok_or("not managing")?;
-        let bundle = dock::bundle_id_at(&item.path).ok_or("the item's bundle has no id")?;
-        let pid = match ob.pids_with_bundle(&bundle)[..] {
-            [] => return Err("the app is not running (or not managed)"),
-            [pid] => pid,
-            _ => return Err("several instances of the app run"),
-        };
+        let pid = self.dock_item_pid(ob, item)?;
+        let bundle = ob.bundle_id(pid).unwrap_or_default();
         m.dock_gates(pid)?;
         let displays = m.displays().to_vec();
         let visible_here = dock::visible_window_of(list, pid, |r| displays.iter().any(|d| d.parks(r)));
@@ -1671,7 +1718,7 @@ impl Controller {
     /// hit-test at its center ([`dock::item_at`]), the prediction at the press, the
     /// arrangement at the release; then the item the hit-test found is pressed (`AXPress`,
     /// which activates the app as a click does, the Dock auto-hidden or not).
-    pub(super) fn debug_dock_click(&mut self, ob: &Observer, bundle: &str) -> serde_json::Value {
+    pub(super) fn debug_dock_click(&mut self, ob: &mut Observer, bundle: &str) -> serde_json::Value {
         use serde_json::json;
         let only = std::env::var("STAGE_MANAGER_ONLY").unwrap_or_default();
         if !only.split(',').any(|b| b.trim() == bundle) {
@@ -1712,7 +1759,7 @@ impl Controller {
     /// through the press and release path, then the item is pressed.
     fn debug_dock_press(
         &mut self,
-        ob: &Observer,
+        ob: &mut Observer,
         list: &[CgWindow],
         bundle: &str,
         listed: &DockItem,
@@ -1726,8 +1773,8 @@ impl Controller {
             Err(miss) => return json!({ "ok": false, "error": format!("the hit-test at {at:?} found no application item: {}", miss.found) }),
         };
         let pressed_at = Instant::now();
-        self.press_item(ob, list, item, at, pressed_at);
-        let predicted = self.dock_released(ob, at, false, Instant::now());
+        self.press_item(ob, list, item, at, pressed_at, false);
+        let predicted = self.dock_released(ob, at, false, false, Instant::now());
         let pressed = element.bounded(QUERY_AX_TIMEOUT_SECONDS * 4.0, |e| e.perform_action(names::PRESS));
         tracing::info!(bundle, predicted = ?predicted.map(|w| w.0), pressed = pressed.is_ok(), "debug-dock-click");
         json!({ "ok": pressed.is_ok(), "predicted": predicted.map(|w| w.0), "error": pressed.err().map(|e| e.to_string()) })

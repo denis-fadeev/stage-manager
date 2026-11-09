@@ -198,8 +198,10 @@ with Apple's.
   merged stage and drag a window onto the strip.
 
 Shift-click a card to bring its windows into the current stage without leaving it, as with
-Apple's. Hold Shift while you open an app, or Shift-click it in the Dock, to bring it here too
-(**Hold Shift to choose the stage** in Settings → Stages turns this off).
+Apple's. Hold Shift while you open an app, or Shift-click it in the Dock, to bring it here too.
+If the app is already here, Shift-clicking its Dock icon sends its windows from this stage
+to a new one and leaves the current stage in front. **Hold Shift to choose the stage** in
+Settings → Stages controls both Dock actions.
 
 ### New apps in the current stage
 

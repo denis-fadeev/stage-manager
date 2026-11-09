@@ -2485,6 +2485,37 @@ fn bring_app_here_moves_every_window_of_the_app() {
 }
 
 #[test]
+fn detach_app_sends_only_its_windows_in_the_shown_stage_to_one_new_stage() {
+    let mut e = Env::new();
+    e.add(meta(1, 10, "com.example.a"), RuleAction::Current);
+    e.add(meta(2, 11, "com.example.b"), RuleAction::Current);
+    e.add(meta(3, 11, "com.example.b"), RuleAction::Current);
+    e.add(child(4, 11, Some(3)), RuleAction::Current);
+    e.add(meta(5, 11, "com.example.b"), RuleAction::Current);
+    e.send(5, Target::New);
+    e.add(meta(6, 11, "com.example.b"), RuleAction::Float);
+    let elsewhere = e.m.stage_of(w(5));
+    let source = e.m.main_active_stage().expect("active stage");
+    let obs = Observation { focused: Some(w(4)), ..e.d.obs() };
+
+    let actions = e.m.detach_app(11, source, &obs);
+    assert!(actions.contains(&Action::Focus { id: w(1) }));
+    e.run(actions);
+    assert_eq!(e.m.main_active_stage(), Some(source));
+    assert_eq!(e.members(1), [1]);
+    let dest = e.m.stage_of(w(2)).expect("new stage");
+    assert_eq!(e.m.stage(dest).expect("new stage").windows, [w(3), w(2)]);
+    for id in [2, 3, 4] {
+        assert_eq!(e.m.stage_of(w(id)), Some(dest));
+        assert!(e.d.parked(w(id)));
+    }
+    assert_eq!(e.m.stage_of(w(5)), elsewhere);
+    assert_eq!(e.m.window(w(6)).expect("pinned window").home, Home::Pinned);
+    assert!(e.m.detach_app(11, source, &obs).is_empty());
+    assert!(e.m.detach_app(11, dest, &obs).is_empty());
+}
+
+#[test]
 fn bring_app_here_one_at_a_time_takes_only_the_most_recent_window() {
     let mut options = ModelOptions::default();
     options.settings.app_windows = AppWindows::OneAtATime;

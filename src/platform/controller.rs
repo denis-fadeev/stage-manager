@@ -1092,7 +1092,7 @@ pub struct Controller {
     /// The held window's Desktop, arranged before it was recognized ([`arrival`]).
     ahead: Option<arrival::AheadSent>,
     /// A left mouse-down on an application item of the Dock, until its mouse-up.
-    dock_press: Option<super::dock::DockPress<arrival::Prediction>>,
+    dock_press: Option<super::dock::DockPress<arrival::DockIntent>>,
     /// The Dock's pid, while it runs.
     dock_pid: Option<i32>,
     /// The Dock and its bar as the inert-slivers tap last got them, and when they were read
@@ -3976,6 +3976,7 @@ impl Controller {
     pub fn input(&mut self, ob: &mut Observer, event: InputEvent, drop: Option<StripDrop>) {
         let now = Instant::now();
         let mods = Modifiers { shift: event.shift, cmd: event.cmd };
+        let shift_only = event.shift && !event.cmd && !event.other_modifiers;
         if event.kind == InputKind::MouseUp {
             self.triggers.record_release(now, mods);
         } else {
@@ -3998,7 +3999,7 @@ impl Controller {
                 // up in it. A press on a Dock item: its click may take the user to another
                 // Desktop.
                 let list = if self.model.is_some() && !self.frozen() { windows::list_windows() } else { Vec::new() };
-                self.dock_pressed(ob, &list, event.at, now);
+                self.dock_pressed(ob, &list, event.at, now, shift_only);
                 // A click where an arriving window is about to be was meant for it: it
                 // arrives now, and the click is no wallpaper click.
                 let for_arriving = self.pending.as_ref().is_some_and(|p| p.frames.iter().any(|f| f.contains(event.at)));
@@ -4031,7 +4032,7 @@ impl Controller {
             }
             InputKind::MouseUp => {
                 let modifiers = event.cmd || event.shift || event.other_modifiers;
-                let _ = self.dock_released(ob, event.at, modifiers, now);
+                let _ = self.dock_released(ob, event.at, modifiers, shift_only, now);
                 self.press = None;
                 self.focus_after_press_done(ob);
                 let Some(drag) = self.drag.take() else { return };

@@ -422,7 +422,7 @@ until used; the rest are off.
 |---|---|
 | Drag a card up or down to reorder the strip | on |
 | Drop a card onto another card to merge the two stages | on |
-| Hold Shift while opening or activating an app, or on a Dock click, to bring it here | on |
+| Hold Shift while opening or activating an app to bring it here. Shift-click its Dock icon when it is already here to send its windows from the current stage to a new one. | on |
 | Parked windows' edges ignore clicks; the wallpaper patch covers them | on |
 | Rules for new windows: a named stage, a new stage, pinned to every stage, or ignored; centered or cascaded | off until a rule is written |
 | Keyboard shortcuts to switch, send, pin and show the strip | off |

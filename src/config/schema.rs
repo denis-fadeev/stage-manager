@@ -365,7 +365,7 @@ pub const KEYS: &[KeyDef] = &[
     },
     // [sugar]
     k("sugar", "shift_brings_here", Kind::Bool, "true",
-        "Hold Shift while opening or activating an app (Dock, Finder, Spotlight Shift-Return, Launchpad) to bring it here; with [stages] new_apps_join_current on, Shift while opening an app gives it a stage of its own instead. A Shift-click on a card (Apple's) works either way."),
+        "Hold Shift while opening or activating an app (Dock, Finder, Spotlight Shift-Return, Launchpad) to bring it here. Shift-click an app already in the current stage in the Dock to send its windows from that stage to a new one. With [stages] new_apps_join_current on, Shift while opening an app gives it a stage of its own instead. A Shift-click on a card (Apple's) works either way."),
     k("sugar", "launch_window_ms", i(0, 60_000), "10000", "A newly opened app's first window counts a Shift held this long before."),
     k("sugar", "activation_window_ms", i(0, 60_000), "2000", "An activation counts a Shift held this long before."),
     // [hotkeys]
@@ -555,6 +555,7 @@ pub const LEGACY_DEFAULTS: &[&str] = &[
     include_str!("legacy/default-30.toml"),
     include_str!("legacy/default-31.toml"),
     include_str!("legacy/default-32.toml"),
+    include_str!("legacy/default-33.toml"),
 ];
 
 #[cfg(test)]

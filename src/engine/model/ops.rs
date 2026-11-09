@@ -430,57 +430,81 @@ impl Model {
     /// `n == count + 1`, else is a no-op for a missing stage. Sending the last window out
     /// leaves the active stage empty.
     pub fn send_window(&mut self, id: WindowId, target: Target, obs: &Observation) -> Vec<Action> {
-        let mut actions = Vec::new();
         let Some(id) = self.resolve_standard(id) else {
-            return actions;
+            return Vec::new();
         };
         let src = self.windows[&id].home;
         let space = self.windows[&id].space;
         if !self.is_shown_space(space) {
             // Its Desktop is not shown: moving, raising or focusing it there could make macOS
             // switch Desktops (L2; only `ctl send` by window id can ask this).
-            return actions;
+            return Vec::new();
         }
         let count = self.stages_in(space).count();
         let dest = match target {
             Target::Number(n) if n >= 1 && n <= count => match self.stage_by_number(space, n) {
                 Some(s) => s,
-                None => return actions,
+                None => return Vec::new(),
             },
             Target::Number(n) if n == count + 1 => self.create_stage(space, None),
-            Target::Number(_) => return actions,
+            Target::Number(_) => return Vec::new(),
             Target::New => self.create_stage(space, None),
             Target::Named(name) => match self.find_named(space, &name) {
                 Some(s) => s,
                 None => self.create_stage(space, Some(name)),
             },
         };
-        let src_display = self.space_display(space);
+        self.send_windows(&[id], src, dest, obs)
+    }
+
+    /// Sends the app's windows in the clicked stage (and their children) to one new stage.
+    /// Windows of the app in other stages and pinned windows keep their homes.
+    pub fn detach_app(&mut self, pid: Pid, stage: StageId, obs: &Observation) -> Vec<Action> {
+        let Some(source) = self.stage(stage).filter(|_| self.stage_in_front(stage)) else {
+            return Vec::new();
+        };
+        let members: Vec<_> = source.windows.iter().copied()
+            .filter(|id| self.windows[id].meta.pid == pid)
+            .collect();
+        if members.is_empty() {
+            return Vec::new();
+        }
+        let dest = self.create_stage(source.space, None);
+        self.send_windows(&members, Home::Stage(stage), dest, obs)
+    }
+
+    /// Sends standard windows with a common home to another stage on the same Space.
+    fn send_windows(&mut self, members: &[WindowId], src: Home, dest: StageId, obs: &Observation) -> Vec<Action> {
+        let mut actions = Vec::new();
         if src == Home::Stage(dest) {
             return actions;
         }
-        let mut group = vec![id];
-        group.extend(self.children_of(id));
+        let destination = self.stage(dest).expect("send destination exists");
+        let (space, dest_display) = (destination.space, destination.display);
+        let group: Vec<_> = members.iter().copied()
+            .flat_map(|id| std::iter::once(id).chain(self.children_of(id)))
+            .collect();
         for &w in &group {
             if let Some(&f) = obs.frames.get(&w) {
                 self.record_frame(w, f);
             }
         }
-        let was_focused = obs.focused.and_then(|f| self.resolve_standard(f)) == Some(id);
+        let was_focused = obs.focused.and_then(|f| self.resolve_standard(f)).is_some_and(|id| members.contains(&id));
         if let Home::Stage(s) = src
             && let Some(stage) = self.stage_mut(s)
         {
-            stage.windows.retain(|&w| w != id);
-            if stage.key == Some(id) {
+            stage.windows.retain(|w| !members.contains(w));
+            if stage.key.is_some_and(|id| members.contains(&id)) {
                 stage.key = stage.windows.first().copied();
             }
         }
-        let dest_display = self.stage(dest).map_or(src_display, |s| s.display);
         if let Some(stage) = self.stage_mut(dest) {
-            stage.windows.insert(0, id);
-            stage.key = Some(id);
+            stage.windows.splice(..0, members.iter().copied());
+            stage.key = members.first().copied();
         }
-        self.set_home(id, Home::Stage(dest), dest_display);
+        for &id in members {
+            self.set_home(id, Home::Stage(dest), dest_display);
+        }
 
         let dest_active = self.is_active(dest);
         if dest_active {
